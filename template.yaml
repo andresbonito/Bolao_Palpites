@@ -279,7 +279,7 @@ Resources:
       AdditionalAuthenticationProviders:
         - AuthenticationType: AMAZON_COGNITO_USER_POOLS
           UserPoolConfig: 
-              UserPoolId: 'us-east-1_PqXLqW4WY'
+              UserPoolId: 'CognitoUserPool'
               AwsRegion: !Sub ${AWS::Region}
 
   ScoresAndGuessesSchema:
