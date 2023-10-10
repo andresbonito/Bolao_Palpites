@@ -1,0 +1,739 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+    Jogo do bolao da copa
+
+Parameters:
+    TablesBillingMode:
+        Description: Billing Mode for DynamoDB table
+        Type: String
+        Default: PAY_PER_REQUEST
+
+Globals:
+    Function:
+        Timeout: 10
+        Runtime: python3.9
+        MemorySize: 128
+
+Resources:
+
+# ==============================
+#
+# = = = = SECTION ROLE = = = = =
+#
+# ==============================
+
+  LambdaInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - appsync.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: dynamodb-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "dynamodb:GetItem"
+                  - "dynamodb:Query"
+                  - "dynamodb:Scan"
+                  - "dynamodb:PutItem"
+                  - "dynamodb:UpdateItem"
+                  - "dynamodb:DeleteItem"
+                Resource: 
+                  - !GetAtt GuessesTable.Arn
+                  - !Join ["/", [!GetAtt GuessesTable.Arn, 'index', '*' ] ]
+        - PolicyName: lambda-invoke
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                  - lambda:InvokeAsync
+                Resource:
+                  - !GetAtt MakeGuessFunction.Arn
+                  - !GetAtt UpdateGuessFunction.Arn
+
+  DdbLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - appsync.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: dynamodb-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "dynamodb:GetItem"
+                  - "dynamodb:Query"
+                  - "dynamodb:Scan"
+                  - "dynamodb:PutItem"
+                  - "dynamodb:UpdateItem"
+                  - "dynamodb:DeleteItem"
+                Resource: 
+                  - !GetAtt GuessesTable.Arn
+                  - !Join ["/", [!GetAtt GuessesTable.Arn, 'index', '*' ] ]
+
+# ==============================
+#
+# = = = = SECTION TABLES = = = =
+#
+# ==============================
+
+  GuessesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-GuessesTable'
+      BillingMode: !Ref TablesBillingMode
+      KeySchema:
+          - AttributeName: guessId
+            KeyType: HASH
+      AttributeDefinitions:
+          - AttributeName: guessId
+            AttributeType: S
+          - AttributeName: matchId
+            AttributeType: S
+          - AttributeName: winningTeam
+            AttributeType: S
+          - AttributeName: group
+            AttributeType: S
+      GlobalSecondaryIndexes:
+        - IndexName: matchId
+          KeySchema:
+            - AttributeName: matchId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: winningTeam
+          KeySchema:
+            - AttributeName: winningTeam
+              KeyType: HASH
+            - AttributeName: guessId
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: group
+          KeySchema:
+            - AttributeName: group
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+      Tags:
+          - Key: Name
+            Value: GuessesTable
+
+  GroupStatsGuessesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-GroupStatsGuessesTable'
+      BillingMode: !Ref TablesBillingMode
+      KeySchema:
+          - AttributeName: groupGuessId
+            KeyType: HASH
+      AttributeDefinitions:
+          - AttributeName: groupGuessId
+            AttributeType: S
+          - AttributeName: teamGuessId
+            AttributeType: S
+          - AttributeName: userGuessId
+            AttributeType: S
+          - AttributeName: __typename
+            AttributeType: S
+      GlobalSecondaryIndexes:
+        - IndexName: teamGuessId
+          KeySchema:
+            - AttributeName: teamGuessId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: userGuessId
+          KeySchema:
+            - AttributeName: userGuessId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: __typename
+          KeySchema:
+            - AttributeName: __typename
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+      Tags:
+          - Key: Name
+            Value: GroupStatsGuessesTable
+
+# ==============================
+#
+# = = SECTION SCRIPTS TABLES = = 
+#
+# ==============================
+
+  ResultsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+        TableName: !Sub '${AWS::StackName}-ResultsTable'
+        BillingMode: !Ref TablesBillingMode
+        KeySchema:
+            - AttributeName: matchId
+              KeyType: HASH
+            - AttributeName: __typename
+              KeyType: RANGE
+        AttributeDefinitions:
+            - AttributeName: matchId
+              AttributeType: S
+            - AttributeName: __typename
+              AttributeType: S
+        GlobalSecondaryIndexes:
+            - IndexName: __typename
+              KeySchema:
+                - AttributeName: __typename
+                  KeyType: HASH
+              Projection:
+                ProjectionType: ALL
+        StreamSpecification:
+            StreamViewType: NEW_AND_OLD_IMAGES
+        Tags:
+            - Key: Name
+              Value: ResultsTable
+
+  TeamsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+        TableName: !Sub '${AWS::StackName}-TeamsTable'
+        BillingMode: !Ref TablesBillingMode
+        KeySchema:
+            - AttributeName: teamId
+              KeyType: HASH
+        AttributeDefinitions:
+            - AttributeName: teamId
+              AttributeType: S
+            - AttributeName: team
+              AttributeType: S
+        GlobalSecondaryIndexes:
+            - IndexName: team
+              KeySchema:
+                - AttributeName: team
+                  KeyType: HASH
+              Projection:
+                ProjectionType: ALL
+        StreamSpecification:
+            StreamViewType: NEW_AND_OLD_IMAGES
+        Tags:
+            - Key: Name
+              Value: TeamsTable
+
+  ScoresTables:
+    Type: AWS::DynamoDB::Table
+    Properties:
+        TableName: !Sub '${AWS::StackName}-ScoresTables'
+        BillingMode: !Ref TablesBillingMode
+        KeySchema:
+            - AttributeName: scoreId
+              KeyType: HASH
+            - AttributeName: __typename
+              KeyType: RANGE
+        AttributeDefinitions:
+            - AttributeName: scoreId
+              AttributeType: S
+            - AttributeName: __typename
+              AttributeType: S
+        StreamSpecification:
+            StreamViewType: NEW_AND_OLD_IMAGES
+        Tags:
+            - Key: Name
+              Value: ScoresTables
+
+# ==============================
+#
+# = = = = SECTION APPSYNC = = = 
+#
+# ==============================
+
+  GuessesApi:
+    Type: AWS::AppSync::GraphQLApi
+    Properties:
+      Name: GuessesApi
+      AuthenticationType: AWS_IAM
+      AdditionalAuthenticationProviders:
+        - AuthenticationType: AMAZON_COGNITO_USER_POOLS
+          UserPoolConfig: 
+              UserPoolId: 'us-east-1_PqXLqW4WY'
+              AwsRegion: !Sub ${AWS::Region}
+
+  ScoresAndGuessesSchema:
+    Type: AWS::AppSync::GraphQLSchema
+    Properties:
+      ApiId: !GetAtt GuessesApi.ApiId
+      Definition: |
+        schema {
+          query: Query
+          mutation: Mutation
+        }
+
+        type Prediction @aws_iam @aws_cognito_user_pools {
+          guessId: ID!
+          __typename: String!
+          matchId: String!
+          userId: String!
+          CreatedAt: String
+          ModifiedAt: String
+          awayTeam: String!
+          awayTeamId: String
+          awayGoals: Int!
+          group: String
+          homeTeam: String!
+          homeTeamId: String
+          homeGoals: Int!
+          penalties: String
+          round: String
+          winningTeam: String
+          winningTeamId: String
+        }
+
+        type Predictions @aws_iam @aws_cognito_user_pools {
+          Predictions: [Prediction]
+          nextToken: String
+        }
+
+        input addPredictionInput {
+          matchId: Int!
+          userId: String!
+          awayTeam: String!
+          awayGoals: Int!
+          homeTeam: String!
+          homeGoals: Int!
+          penalties: String
+        }
+
+        input updatePredictionInput {
+          awayGoals: Int
+          homeGoals: Int
+          penalties: String!
+        }
+
+        type Query @aws_iam @aws_cognito_user_pools {
+          getPrediction(guessId: ID!): Prediction
+          getPredictions(limit: Int, nextToken: String): Predictions
+        }
+
+        type Mutation @aws_iam @aws_cognito_user_pools {
+          addPrediction(input: addPredictionInput): Prediction
+          updatePrediction(guessId: ID!, input: updatePredictionInput): Prediction
+        }
+
+# ==============================
+#
+# = = SECTION DATA SOURCES = = = 
+#
+# ==============================
+
+  GuessesDataSource:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt GuessesApi.ApiId
+      Name: GuessesDataSource
+      Type: AMAZON_DYNAMODB
+      ServiceRoleArn: !GetAtt DdbLambdaRole.Arn
+      DynamoDBConfig:
+        TableName: !Ref GuessesTable
+        AwsRegion: !Sub ${AWS::Region}
+  
+  addPredictionDataSource:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt GuessesApi.ApiId
+      Name: addPredictionDataSource
+      Type: "AWS_LAMBDA"
+      ServiceRoleArn: !GetAtt LambdaInvokeRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt MakeGuessFunction.Arn
+  
+  updatePredictionDataSource:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt GuessesApi.ApiId
+      Name: updatePredictionDataSource
+      Type: "AWS_LAMBDA"
+      ServiceRoleArn: !GetAtt LambdaInvokeRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt UpdateGuessFunction.Arn
+
+# ==============================
+#
+# = = = = SECTION RESOLVER = = = 
+#
+# ==============================
+
+# Query(ies)
+
+  getPredictionAppSyncResolver:
+    Type: AWS::AppSync::Resolver
+    DependsOn: ScoresAndGuessesSchema
+    Properties:
+      ApiId: !GetAtt GuessesApi.ApiId
+      TypeName: Query
+      FieldName: getPrediction
+      DataSourceName: !GetAtt GuessesDataSource.Name
+      RequestMappingTemplate: >
+        {
+          "version": "2018-05-29",
+          "operation": "GetItem",
+          "key": {
+            "guessId": $util.dynamodb.toDynamoDBJson($ctx.args.guessId)
+          }
+        }
+      ResponseMappingTemplate: >
+        #if($ctx.error)
+          $util.error($ctx.error.message, $ctx.error.type)
+        #else
+          $util.toJson($context.result)
+        #end
+
+  getPredictionsAppSyncResolver:
+    Type: AWS::AppSync::Resolver
+    DependsOn: ScoresAndGuessesSchema
+    Properties:
+      ApiId: !GetAtt GuessesApi.ApiId
+      TypeName: Query
+      FieldName: getPredictions
+      DataSourceName: !GetAtt GuessesDataSource.Name
+      RequestMappingTemplate: >
+        {
+          "version": "2018-05-29",
+          "operation": "Scan"
+          #if (!$util.isNullOrEmpty($context.arguments.limit))
+            ,"limit": $context.arguments.limit
+          #end
+          #if (!$util.isNullOrEmpty($context.arguments.nextToken))
+            ,"nextToken": "${context.arguments.nextToken}"
+          #end
+        }
+      ResponseMappingTemplate: >
+        #if($ctx.error)
+          $util.error($ctx.error.message, $ctx.error.type)
+        #else
+          {
+            "Predictions": $utils.toJson($context.result.items),
+            "nextToken": $util.toJson($util.defaultIfNullOrBlank($context.result.nextToken, null))
+          }
+        #end
+  
+  # getPredictionByWinningTeamAppSyncResolver:
+  #   Type: AWS::AppSync::Resolver
+  #   DependsOn: ScoresAndGuessesSchema
+  #   Properties:
+  #     ApiId: !GetAtt GuessesApi.ApiId
+  #     TypeName: Query
+  #     FieldName: getPredictionByWinningTeam
+  #     DataSourceName: !GetAtt GuessesDataSource.Name
+  #     RequestMappingTemplate: >
+  #       {
+  #         "version": "2018-05-29",
+  #         "operation": "Query",
+  #         "query": {
+  #           "expression": "#winningTeam = :winningTeam",
+  #           "expressionNames": {
+  #             "#winningTeam": "winningTeam"
+  #           },
+  #           "expressionValues": {
+  #             ":winningTeam": $util.dynamodb.toDynamoDBJson($context.arguments.winningTeam)
+  #           }
+  #         },
+  #         "index": "winningTeam"
+  #         #if (!$util.isNullOrEmpty($context.arguments.limit))
+  #           ,"limit": $context.arguments.limit
+  #         #end
+  #         #if (!$util.isNullOrEmpty($context.arguments.nextToken))
+  #           ,"nextToken": "${context.arguments.nextToken}"
+  #         #end
+  #       }
+  #     ResponseMappingTemplate: >
+  #       #if($ctx.error)
+  #         $util.error($ctx.error.message, $ctx.error.type)
+  #       #else
+  #         {
+  #           "WinningTeams": $utils.toJson($context.result.items),
+  #           "nextToken": $util.toJson($util.defaultIfNullOrBlank($context.result.nextToken, null))
+  #         }
+  #       #end
+
+# Mutation(s)
+        
+  addPredictionAppSyncResolver:
+    Type: AWS::AppSync::Resolver
+    DependsOn: ScoresAndGuessesSchema
+    Properties:
+      ApiId: !GetAtt GuessesApi.ApiId
+      TypeName: Mutation
+      FieldName: addPrediction
+      DataSourceName: !GetAtt addPredictionDataSource.Name
+      RequestMappingTemplate: >
+        {
+          "version": "2018-05-29",
+          "operation": "Invoke",
+          "payload": {
+            "arguments": $util.toJson($context.arguments)
+          }
+        }
+      ResponseMappingTemplate: >
+        #if ($ctx.result.error)
+          $util.error($ctx.result.error.message, $ctx.result.error.type)
+        #else
+          $util.toJson($ctx.result)
+        #end
+
+  updatePredictionAppSyncResolver:
+    Type: AWS::AppSync::Resolver
+    DependsOn: ScoresAndGuessesSchema
+    Properties:
+      ApiId: !GetAtt GuessesApi.ApiId
+      TypeName: Mutation
+      FieldName: updatePrediction
+      DataSourceName: !GetAtt updatePredictionDataSource.Name
+      RequestMappingTemplate: >
+        {
+          "version": "2018-05-29",
+          "operation": "Invoke",
+          "payload": {
+            "arguments": $util.toJson($context.arguments)
+          }
+        }
+      ResponseMappingTemplate: >
+        #if ($ctx.result.error)
+          $util.error($ctx.result.error.message, $ctx.result.error.type)
+        #else
+          $util.toJson($ctx.result)
+        #end
+
+# ==============================
+#
+# = = = SECTION FUNCTIONS = = = 
+#
+# ==============================
+
+  MakeGuessFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-MakeGuessFunction'
+      Description: Make Guess
+      Runtime: python3.9
+      CodeUri: functions/
+      Handler: MakeGuess.lambda_handler
+      Timeout: 90
+      MemorySize: 128
+      Architectures:
+        - arm64
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GuessesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ResultsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TeamsTable
+      Environment:
+        Variables:
+          GuessesTable: !Ref GuessesTable
+          ResultsTable: !Ref ResultsTable
+          TeamsTable: !Ref TeamsTable
+          Region: !Ref AWS::Region
+  
+  UpdateGuessFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-UpdateGuessFunction'
+      Description: Update Guess
+      Runtime: python3.9
+      CodeUri: functions/
+      Handler: UpdateGuess.lambda_handler
+      Timeout: 90
+      MemorySize: 128
+      Architectures:
+        - arm64
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GuessesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ResultsTable
+      Environment:
+        Variables:
+          GuessesTable: !Ref GuessesTable
+          ResultsTable: !Ref ResultsTable
+          Region: !Ref AWS::Region
+
+  GroupStatsGuessesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-GroupStatsGuessesFunction'
+      Description: Match stats from guesses
+      Runtime: python3.9
+      CodeUri: functions/
+      Handler: GroupStatsGuesses.lambda_handler
+      Timeout: 90
+      MemorySize: 128
+      Architectures:
+        - arm64
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GuessesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GroupStatsGuessesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TeamsTable
+      Environment:
+        Variables:
+          GuessesTable: !Ref GuessesTable
+          GroupStatsGuessesTable: !Ref GroupStatsGuessesTable
+          TeamsTable: !Ref TeamsTable
+          Region: !Ref AWS::Region
+      Events:
+        TableRecordGuesses:
+          Type: DynamoDB
+          Properties:
+            StartingPosition: TRIM_HORIZON
+            Stream: !GetAtt GuessesTable.StreamArn
+            BatchSize: 5
+            MaximumBatchingWindowInSeconds: 10
+            FilterCriteria:
+              Filters:
+                - Pattern: '{"eventName": ["INSERT"]}'
+
+  GroupGuessesTriggerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-GroupGuessesTriggerFunction'
+      Description: Guess Trigger
+      Runtime: python3.9
+      CodeUri: functions/
+      Handler: GroupsGuessesTrigger.lambda_handler
+      Timeout: 90
+      MemorySize: 128
+      Architectures:
+        - arm64
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GuessesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GroupStatsGuessesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TeamsTable
+      Environment:
+        Variables:
+          GuessesTable: !Ref GuessesTable
+          GroupStatsGuessesTable: !Ref GroupStatsGuessesTable
+          TeamsTable: !Ref TeamsTable
+          Region: !Ref AWS::Region
+      Events:
+        TableRecordGuesses:
+          Type: DynamoDB
+          Properties:
+            StartingPosition: TRIM_HORIZON
+            Stream: !GetAtt GroupStatsGuessesTable.StreamArn
+            BatchSize: 5
+            MaximumBatchingWindowInSeconds: 10
+            FilterCriteria:
+              Filters:
+                - Pattern: '{ "eventName": ["INSERT"] }'
+
+# ==============================
+#
+# = SECTION SCRIPTS FUNCTIONS = 
+#
+# ==============================
+
+  CreateResultsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-CreateResultsFunction'
+      Description: Make Guess
+      Runtime: python3.9
+      CodeUri: gscripts/
+      Handler: createResults.lambda_handler
+      Timeout: 90
+      MemorySize: 128
+      Architectures:
+        - arm64
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ResultsTable
+      Environment:
+        Variables:
+          ResultsTable: !Ref ResultsTable
+          Region: !Ref AWS::Region
+      Events:
+        DDBEvent:
+          Type: DynamoDB
+          Properties:
+            Stream: 
+              !GetAtt ResultsTable.StreamArn
+            StartingPosition: TRIM_HORIZON
+            BatchSize: 10
+
+  CreateTeamsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-CreateTeamsFunction'
+      Description: Create Teams
+      Runtime: python3.9
+      CodeUri: gscripts/
+      Handler: createTeams.lambda_handler
+      Timeout: 90
+      MemorySize: 128
+      Architectures:
+        - arm64
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TeamsTable
+      Environment:
+        Variables:
+          TeamsTable: !Ref TeamsTable
+          Region: !Ref AWS::Region
+      Events:
+        DDBEvent:
+          Type: DynamoDB
+          Properties:
+            Stream: 
+              !GetAtt TeamsTable.StreamArn
+            StartingPosition: TRIM_HORIZON
+            BatchSize: 10
+  
+  CreateScoresFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-CreateScoresFunction'
+      Description: Make Guess
+      Runtime: python3.9
+      CodeUri: gscripts/
+      Handler: Scores.lambda_handler
+      Timeout: 90
+      MemorySize: 128
+      Architectures:
+        - arm64
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ScoresTables
+      Environment:
+        Variables:
+          ScoresTables: !Ref ScoresTables
+          Region: !Ref AWS::Region
